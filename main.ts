@@ -62,6 +62,13 @@ function decodeBase64(content: string) {
   return bytes;
 }
 
+function decodeStoredBinary(content: string) {
+  const normalized = content.startsWith("data:")
+    ? content.slice(content.indexOf(",") + 1)
+    : content;
+  return decodeBase64(normalized);
+}
+
 async function listClips(query = ""): Promise<Clip[]> {
   const clips: Clip[] = [];
   for await (const entry of kv.list<Clip>({ prefix: ["clips"] })) {
@@ -143,13 +150,13 @@ async function findClipByName(name: string) {
 }
 
 function clipBody(clip: Clip) {
-  return clip.type === "text" ? clip.content : decodeBase64(clip.content);
+  return clip.type === "text" ? clip.content : decodeStoredBinary(clip.content);
 }
 
 function clipByteLength(clip: Clip) {
   return clip.type === "text"
     ? new TextEncoder().encode(clip.content).length
-    : decodeBase64(clip.content).length;
+    : decodeStoredBinary(clip.content).length;
 }
 
 function davPathName(pathname: string) {
@@ -158,42 +165,47 @@ function davPathName(pathname: string) {
 }
 
 function buildDavResponseXml(href: string, clip?: Clip) {
-  if (!clip) {
-    return `
-      <d:response>
-        <d:href>${escapeXml(href)}</d:href>
-        <d:propstat>
-          <d:prop>
-            <d:displayname>clipboard</d:displayname>
-            <d:getlastmodified>${new Date().toUTCString()}</d:getlastmodified>
-            <d:resourcetype><d:collection /></d:resourcetype>
-          </d:prop>
-          <d:status>HTTP/1.1 200 OK</d:status>
-        </d:propstat>
-      </d:response>`;
-  }
+  const updatedAt = clip?.updatedAt || Date.now();
+  const contentLength = clip ? clipByteLength(clip) : 0;
+  const contentType = clip ? clip.mimeType : "httpd/unix-directory";
+  const displayName = clip ? clip.name : "clipboard";
+  const resourceType = clip ? "<d:resourcetype />" : "<d:resourcetype><d:collection /></d:resourcetype>";
+  const etag = clip
+    ? `"${clip.id}-${clip.updatedAt}-${clip.size}"`
+    : `"clipboard-${updatedAt}"`;
 
   return `
     <d:response>
       <d:href>${escapeXml(href)}</d:href>
       <d:propstat>
         <d:prop>
-          <d:displayname>${escapeXml(clip.name)}</d:displayname>
-          <d:getcontentlength>${clipByteLength(clip)}</d:getcontentlength>
-          <d:getcontenttype>${escapeXml(clip.mimeType)}</d:getcontenttype>
-          <d:getlastmodified>${new Date(clip.updatedAt).toUTCString()}</d:getlastmodified>
-          <d:resourcetype />
+          <d:displayname>${escapeXml(displayName)}</d:displayname>
+          <d:creationdate>${new Date(updatedAt).toISOString()}</d:creationdate>
+          <d:getlastmodified>${new Date(updatedAt).toUTCString()}</d:getlastmodified>
+          <d:getcontentlength>${contentLength}</d:getcontentlength>
+          <d:getcontenttype>${escapeXml(contentType)}</d:getcontenttype>
+          <d:getetag>${escapeXml(etag)}</d:getetag>
+          ${resourceType}
+          <d:supportedlock>
+            <d:lockentry>
+              <d:lockscope><d:exclusive /></d:lockscope>
+              <d:locktype><d:write /></d:locktype>
+            </d:lockentry>
+          </d:supportedlock>
+          <d:lockdiscovery />
         </d:prop>
         <d:status>HTTP/1.1 200 OK</d:status>
       </d:propstat>
     </d:response>`;
 }
 
-function buildDavPropfind(pathname: string, clips: Clip[], targetClip?: Clip, depth = "1") {
-  const collectionHref = `${DAV_PREFIX}/`;
+function buildDavPropfind(origin: string, pathname: string, clips: Clip[], targetClip?: Clip, depth = "1") {
+  const collectionHref = `${origin}${DAV_PREFIX}/`;
   const includeChildren = !targetClip && depth !== "0";
   const items = includeChildren
-    ? clips.map((clip) => buildDavResponseXml(`${DAV_PREFIX}/${encodeURIComponent(clip.name)}`, clip)).join("")
+    ? clips.map((clip) =>
+      buildDavResponseXml(`${origin}${DAV_PREFIX}/${encodeURIComponent(clip.name)}`, clip)
+    ).join("")
     : "";
   const target = targetClip
     ? buildDavResponseXml(pathname || collectionHref, targetClip)
@@ -231,13 +243,19 @@ async function handleDav(req: Request, url: URL) {
     const depth = req.headers.get("depth") || "1";
     const clips = await listClips();
     if (isCollection) {
-      return buildDavPropfind(`${DAV_PREFIX}/`, clips, undefined, depth);
+      return buildDavPropfind(url.origin, `${url.origin}${DAV_PREFIX}/`, clips, undefined, depth);
     }
     const clip = await findClipByName(name);
     if (!clip) {
       return new Response("Not Found", { status: 404 });
     }
-    return buildDavPropfind(`${DAV_PREFIX}/${encodeURIComponent(clip.name)}`, clips, clip, depth);
+    return buildDavPropfind(
+      url.origin,
+      `${url.origin}${DAV_PREFIX}/${encodeURIComponent(clip.name)}`,
+      clips,
+      clip,
+      depth,
+    );
   }
 
   if (req.method === "PUT") {
