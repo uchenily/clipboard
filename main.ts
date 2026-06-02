@@ -742,7 +742,8 @@ const HTML = `<!DOCTYPE html>
 
   .textarea {
     min-height: 140px;
-    resize: vertical;
+    resize: none;
+    overflow: hidden;
   }
 
   .input:focus,
@@ -870,8 +871,11 @@ const HTML = `<!DOCTYPE html>
   }
 
   .result-meta {
+    margin: 0;
+    padding: 0;
     color: var(--muted);
     font-size: 0.92rem;
+    line-height: 1.5;
   }
 
   .clip-list {
@@ -897,6 +901,20 @@ const HTML = `<!DOCTYPE html>
     background: var(--panel-strong);
     border: 1px solid rgba(24, 32, 40, 0.08);
     box-shadow: 0 18px 34px rgba(24, 26, 28, 0.08);
+    cursor: pointer;
+    transition: transform 0.18s, box-shadow 0.18s, border-color 0.18s;
+  }
+
+  .card:hover {
+    transform: translateY(-1px);
+    border-color: rgba(217, 107, 43, 0.18);
+    box-shadow: 0 22px 40px rgba(24, 26, 28, 0.12);
+  }
+
+  .card:focus-visible {
+    outline: 0;
+    border-color: rgba(217, 107, 43, 0.45);
+    box-shadow: 0 0 0 4px rgba(217, 107, 43, 0.12), 0 22px 40px rgba(24, 26, 28, 0.12);
   }
 
   .card-main {
@@ -1059,21 +1077,14 @@ const HTML = `<!DOCTYPE html>
     <div class="layout">
       <aside class="panel">
         <h1 class="hero-title">Northstar<br>Clipboard</h1>
-        <p class="hero-copy">支持粘贴文本、图片和文件，保留最近 10 条历史。文本可在线修改，图片可全屏预览，文件可上传、下载，也支持基础 WebDAV 接入。</p>
+        <p class="hero-copy">支持粘贴文本、图片和文件，保留最近 10 条历史。文本可在线修改，图片可全屏预览，文件可上传、下载。</p>
 
         <div class="meta">
           <div class="stat">
             <label>快捷方式</label>
             <strong><span class="mono">Ctrl/Cmd + V</span> 直接保存系统剪贴板</strong>
           </div>
-          <div class="stat">
-            <label>WebDAV</label>
-            <strong class="mono" id="davUrl">__DAV_URL__</strong>
-          </div>
-          <div class="stat">
-            <label>说明</label>
-            <strong>PUT 可写入新内容，PROPFIND 可列出记录，GET 可读取单条内容。</strong>
-          </div>
+
         </div>
 
         <div class="controls">
@@ -1233,6 +1244,12 @@ const HTML = `<!DOCTYPE html>
       return clip.content.length > 220 ? clip.content.slice(0, 220) + '…' : clip.content;
     }
 
+    function autoResizeTextarea(textarea) {
+      if (!textarea) return;
+      textarea.style.height = 'auto';
+      textarea.style.height = Math.max(textarea.scrollHeight, 140) + 'px';
+    }
+
     function renderClips() {
       if (!state.clips.length) {
         els.clipList.innerHTML = '<div class="empty-state">没有匹配内容。试试更短的关键词，或者直接粘贴新内容。</div>';
@@ -1243,6 +1260,18 @@ const HTML = `<!DOCTYPE html>
       state.clips.forEach(function (clip) {
         const card = document.createElement('article');
         card.className = 'card';
+        card.tabIndex = 0;
+        card.setAttribute('role', 'button');
+        card.setAttribute('aria-label', '预览 ' + clip.name);
+        card.addEventListener('click', function () {
+          openPreview(clip);
+        });
+        card.addEventListener('keydown', function (event) {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            openPreview(clip);
+          }
+        });
 
         const main = document.createElement('div');
         main.className = 'card-main';
@@ -1278,9 +1307,6 @@ const HTML = `<!DOCTYPE html>
         const actions = document.createElement('div');
         actions.className = 'card-actions';
 
-        const previewBtn = button('预览', 'ghost', function () { openPreview(clip); });
-        actions.appendChild(previewBtn);
-
         if (clip.type === 'text' || clip.type === 'image') {
           actions.appendChild(button('复制', 'ghost', function () { copyClip(clip); }));
         }
@@ -1306,8 +1332,12 @@ const HTML = `<!DOCTYPE html>
     function button(label, className, onClick) {
       const el = document.createElement('button');
       el.className = className;
+      el.type = 'button';
       el.textContent = label;
-      el.addEventListener('click', onClick);
+      el.addEventListener('click', function (event) {
+        event.stopPropagation();
+        onClick(event);
+      });
       return el;
     }
 
@@ -1338,6 +1368,7 @@ const HTML = `<!DOCTYPE html>
       }
       els.textInput.value = '';
       els.textName.value = '';
+      autoResizeTextarea(els.textInput);
       setStatus('文本已保存。', 'success');
       await loadClips();
     }
@@ -1461,6 +1492,10 @@ const HTML = `<!DOCTYPE html>
       const textarea = document.createElement('textarea');
       textarea.className = 'textarea modal-text';
       textarea.value = clip.content;
+      autoResizeTextarea(textarea);
+      textarea.addEventListener('input', function () {
+        autoResizeTextarea(textarea);
+      });
 
       const actions = document.createElement('div');
       actions.className = 'modal-actions';
@@ -1545,6 +1580,10 @@ const HTML = `<!DOCTYPE html>
       saveText().catch(function (error) {
         setStatus(error.message || '保存失败', 'error');
       });
+    });
+    autoResizeTextarea(els.textInput);
+    els.textInput.addEventListener('input', function () {
+      autoResizeTextarea(els.textInput);
     });
 
     els.refreshBtn.addEventListener('click', function () {
