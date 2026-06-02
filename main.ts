@@ -164,6 +164,19 @@ function davPathName(pathname: string) {
   return sanitizeName(decodeURIComponent(raw || ""));
 }
 
+function destinationDavName(destination: string | null) {
+  if (!destination) return "";
+  try {
+    const url = new URL(destination);
+    return davPathName(url.pathname);
+  } catch {
+    if (destination.startsWith("/")) {
+      return davPathName(destination);
+    }
+    return "";
+  }
+}
+
 function buildDavResponseXml(href: string, clip?: Clip) {
   const updatedAt = clip?.updatedAt || Date.now();
   const contentLength = clip ? clipByteLength(clip) : 0;
@@ -232,7 +245,7 @@ async function handleDav(req: Request, url: URL) {
   if (req.method === "OPTIONS") {
     return new Response(null, {
       headers: {
-        allow: "OPTIONS, PROPFIND, GET, HEAD, PUT, DELETE, LOCK, UNLOCK",
+        allow: "OPTIONS, PROPFIND, GET, HEAD, PUT, DELETE, COPY, MOVE, LOCK, UNLOCK",
         dav: "1, 2",
         "ms-author-via": "DAV",
       },
@@ -328,6 +341,63 @@ async function handleDav(req: Request, url: URL) {
     }
     await kv.delete(["clips", clip.id]);
     return new Response(null, { status: 204 });
+  }
+
+  if (req.method === "MOVE" || req.method === "COPY") {
+    if (isCollection || !name) {
+      return new Response("Method Not Allowed", { status: 405 });
+    }
+    const source = await findClipByName(name);
+    if (!source) {
+      return new Response("Not Found", { status: 404 });
+    }
+
+    const destinationName = destinationDavName(req.headers.get("destination"));
+    if (!destinationName) {
+      return new Response("Bad Request", { status: 400 });
+    }
+
+    const overwrite = (req.headers.get("overwrite") || "T").toUpperCase() !== "F";
+    const existingDestination = await findClipByName(destinationName);
+    if (existingDestination && !overwrite) {
+      return new Response("Precondition Failed", { status: 412 });
+    }
+
+    if (req.method === "MOVE") {
+      if (existingDestination && existingDestination.id !== source.id) {
+        await kv.delete(["clips", existingDestination.id]);
+      }
+      const updated: Clip = {
+        ...source,
+        name: destinationName,
+        updatedAt: Date.now(),
+      };
+      await kv.set(["clips", source.id], updated);
+      return new Response(null, { status: existingDestination ? 204 : 201 });
+    }
+
+    if (existingDestination) {
+      const updated: Clip = {
+        ...existingDestination,
+        type: source.type,
+        name: destinationName,
+        mimeType: source.mimeType,
+        size: source.size,
+        content: source.content,
+        updatedAt: Date.now(),
+      };
+      await kv.set(["clips", existingDestination.id], updated);
+      return new Response(null, { status: 204 });
+    }
+
+    await saveClip({
+      type: source.type,
+      name: destinationName,
+      mimeType: source.mimeType,
+      size: source.size,
+      content: source.content,
+    });
+    return new Response(null, { status: 201 });
   }
 
   if (req.method === "GET" || req.method === "HEAD") {
