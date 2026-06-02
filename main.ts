@@ -123,50 +123,85 @@ function buildDownloadHeaders(clip: Clip) {
 function clipToPublic(clip: Clip) {
   return {
     ...clip,
+    davPath: `${DAV_PREFIX}/${encodeURIComponent(clip.name)}`,
     preview: clip.type === "text"
       ? clip.content
       : `/api/clips/${clip.id}/download`,
   };
 }
 
-function buildDavPropfind(baseUrl: string, clips: Clip[]) {
-  const now = new Date().toUTCString();
-  const collectionHref = `${baseUrl}${DAV_PREFIX}/`;
-  const items = clips.map((clip) => {
-    const href = `${baseUrl}${DAV_PREFIX}/${encodeURIComponent(clip.id)}`;
-    const length = clip.type === "text"
-      ? new TextEncoder().encode(clip.content).length
-      : decodeBase64(clip.content).length;
+async function findClipByName(name: string) {
+  let match: Clip | null = null;
+  for await (const entry of kv.list<Clip>({ prefix: ["clips"] })) {
+    if (entry.value.name === name) {
+      if (!match || entry.value.updatedAt > match.updatedAt) {
+        match = entry.value;
+      }
+    }
+  }
+  return match;
+}
 
+function clipBody(clip: Clip) {
+  return clip.type === "text" ? clip.content : decodeBase64(clip.content);
+}
+
+function clipByteLength(clip: Clip) {
+  return clip.type === "text"
+    ? new TextEncoder().encode(clip.content).length
+    : decodeBase64(clip.content).length;
+}
+
+function davPathName(pathname: string) {
+  const raw = pathname.slice(DAV_PREFIX.length).replace(/^\/+/, "");
+  return sanitizeName(decodeURIComponent(raw || ""));
+}
+
+function buildDavResponseXml(href: string, clip?: Clip) {
+  if (!clip) {
     return `
       <d:response>
         <d:href>${escapeXml(href)}</d:href>
         <d:propstat>
           <d:prop>
-            <d:displayname>${escapeXml(clip.name)}</d:displayname>
-            <d:getcontentlength>${length}</d:getcontentlength>
-            <d:getcontenttype>${escapeXml(clip.mimeType)}</d:getcontenttype>
-            <d:getlastmodified>${new Date(clip.updatedAt).toUTCString()}</d:getlastmodified>
-            <d:resourcetype />
+            <d:displayname>clipboard</d:displayname>
+            <d:getlastmodified>${new Date().toUTCString()}</d:getlastmodified>
+            <d:resourcetype><d:collection /></d:resourcetype>
           </d:prop>
           <d:status>HTTP/1.1 200 OK</d:status>
         </d:propstat>
       </d:response>`;
-  }).join("");
+  }
+
+  return `
+    <d:response>
+      <d:href>${escapeXml(href)}</d:href>
+      <d:propstat>
+        <d:prop>
+          <d:displayname>${escapeXml(clip.name)}</d:displayname>
+          <d:getcontentlength>${clipByteLength(clip)}</d:getcontentlength>
+          <d:getcontenttype>${escapeXml(clip.mimeType)}</d:getcontenttype>
+          <d:getlastmodified>${new Date(clip.updatedAt).toUTCString()}</d:getlastmodified>
+          <d:resourcetype />
+        </d:prop>
+        <d:status>HTTP/1.1 200 OK</d:status>
+      </d:propstat>
+    </d:response>`;
+}
+
+function buildDavPropfind(pathname: string, clips: Clip[], targetClip?: Clip, depth = "1") {
+  const collectionHref = `${DAV_PREFIX}/`;
+  const includeChildren = !targetClip && depth !== "0";
+  const items = includeChildren
+    ? clips.map((clip) => buildDavResponseXml(`${DAV_PREFIX}/${encodeURIComponent(clip.name)}`, clip)).join("")
+    : "";
+  const target = targetClip
+    ? buildDavResponseXml(pathname || collectionHref, targetClip)
+    : buildDavResponseXml(collectionHref);
 
   const xml = `<?xml version="1.0" encoding="utf-8"?>
 <d:multistatus xmlns:d="DAV:">
-  <d:response>
-    <d:href>${escapeXml(collectionHref)}</d:href>
-    <d:propstat>
-      <d:prop>
-        <d:displayname>clipboard</d:displayname>
-        <d:getlastmodified>${now}</d:getlastmodified>
-        <d:resourcetype><d:collection /></d:resourcetype>
-      </d:prop>
-      <d:status>HTTP/1.1 200 OK</d:status>
-    </d:propstat>
-  </d:response>${items}
+  ${target}${items}
 </d:multistatus>`;
 
   return new Response(xml, {
@@ -179,22 +214,36 @@ function buildDavPropfind(baseUrl: string, clips: Clip[]) {
 }
 
 async function handleDav(req: Request, url: URL) {
+  const isCollection = url.pathname === DAV_PREFIX || url.pathname === `${DAV_PREFIX}/`;
+  const name = davPathName(url.pathname);
+
   if (req.method === "OPTIONS") {
     return new Response(null, {
       headers: {
-        allow: "OPTIONS, PROPFIND, GET, HEAD, PUT",
+        allow: "OPTIONS, PROPFIND, GET, HEAD, PUT, DELETE, LOCK, UNLOCK",
         dav: "1",
+        "ms-author-via": "DAV",
       },
     });
   }
 
   if (req.method === "PROPFIND") {
+    const depth = req.headers.get("depth") || "1";
     const clips = await listClips();
-    return buildDavPropfind(url.origin, clips);
+    if (isCollection) {
+      return buildDavPropfind(`${DAV_PREFIX}/`, clips, undefined, depth);
+    }
+    const clip = await findClipByName(name);
+    if (!clip) {
+      return new Response("Not Found", { status: 404 });
+    }
+    return buildDavPropfind(`${DAV_PREFIX}/${encodeURIComponent(clip.name)}`, clips, clip, depth);
   }
 
   if (req.method === "PUT") {
-    const name = sanitizeName(decodeURIComponent(url.pathname.slice(DAV_PREFIX.length + 1) || "webdav.txt"));
+    if (isCollection || !name) {
+      return new Response("Method Not Allowed", { status: 405 });
+    }
     const mimeType = req.headers.get("content-type") || "application/octet-stream";
     const bytes = new Uint8Array(await req.arrayBuffer());
     const type: ClipType = mimeType.startsWith("text/")
@@ -203,33 +252,99 @@ async function handleDav(req: Request, url: URL) {
       ? "image"
       : "file";
 
-    const clip = await saveClip({
-      type,
-      name,
-      mimeType,
-      size: bytes.byteLength,
-      content: type === "text" ? new TextDecoder().decode(bytes) : encodeBase64(bytes),
-    });
+    const existing = await findClipByName(name);
+    const content = type === "text" ? new TextDecoder().decode(bytes) : encodeBase64(bytes);
+    if (existing) {
+      const updated: Clip = {
+        ...existing,
+        type,
+        name,
+        mimeType,
+        size: bytes.byteLength,
+        content,
+        updatedAt: Date.now(),
+      };
+      await kv.set(["clips", existing.id], updated);
+      return json(clipToPublic(updated), 200);
+    }
+
+    const clip = await saveClip({ type, name, mimeType, size: bytes.byteLength, content });
     return json(clipToPublic(clip), 201);
   }
 
-  const id = decodeURIComponent(url.pathname.slice(DAV_PREFIX.length + 1));
-  if (!id) {
-    return new Response("Method Not Allowed", { status: 405 });
+  if (req.method === "LOCK") {
+    const token = `opaquelocktoken:${crypto.randomUUID()}`;
+    const xml = `<?xml version="1.0" encoding="utf-8"?>
+<d:prop xmlns:d="DAV:">
+  <d:lockdiscovery>
+    <d:activelock>
+      <d:locktype><d:write /></d:locktype>
+      <d:lockscope><d:exclusive /></d:lockscope>
+      <d:depth>Infinity</d:depth>
+      <d:owner><d:href>Northstar Clipboard</d:href></d:owner>
+      <d:timeout>Second-3600</d:timeout>
+      <d:locktoken><d:href>${escapeXml(token)}</d:href></d:locktoken>
+    </d:activelock>
+  </d:lockdiscovery>
+</d:prop>`;
+    return new Response(xml, {
+      status: 200,
+      headers: {
+        "content-type": "application/xml; charset=utf-8",
+        "lock-token": `<${token}>`,
+      },
+    });
   }
 
-  const clip = await getClip(id);
-  if (!clip) {
-    return new Response("Not Found", { status: 404 });
+  if (req.method === "UNLOCK") {
+    return new Response(null, { status: 204 });
   }
 
-  const body = clip.type === "text" ? clip.content : decodeBase64(clip.content);
-  return new Response(req.method === "HEAD" ? null : body, {
-    headers: {
-      "content-type": clip.mimeType,
-      "content-length": String(clip.size),
-    },
-  });
+  if (req.method === "DELETE") {
+    if (isCollection || !name) {
+      return new Response("Method Not Allowed", { status: 405 });
+    }
+    const clip = await findClipByName(name);
+    if (!clip) {
+      return new Response("Not Found", { status: 404 });
+    }
+    await kv.delete(["clips", clip.id]);
+    return new Response(null, { status: 204 });
+  }
+
+  if (req.method === "GET" || req.method === "HEAD") {
+    if (isCollection) {
+      const clips = await listClips();
+      const body = clips.map((clip) =>
+        `${clip.name}\t${clip.mimeType}\t${formatBytesForDav(clipByteLength(clip))}`
+      ).join("\n");
+      return new Response(req.method === "HEAD" ? null : body, {
+        headers: {
+          "content-type": "text/plain; charset=utf-8",
+        },
+      });
+    }
+
+    const clip = await findClipByName(name);
+    if (!clip) {
+      return new Response("Not Found", { status: 404 });
+    }
+
+    return new Response(req.method === "HEAD" ? null : clipBody(clip), {
+      headers: {
+        "content-type": clip.mimeType,
+        "content-length": String(clipByteLength(clip)),
+      },
+    });
+  }
+
+  return new Response("Method Not Allowed", { status: 405 });
+}
+
+function formatBytesForDav(size: number) {
+  if (size < 1024) return `${size}B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)}KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)}MB`;
 }
 
 Deno.serve(async (req: Request) => {
@@ -340,6 +455,20 @@ Deno.serve(async (req: Request) => {
       };
       await kv.set(["clips", id], updated);
       return json(clipToPublic(updated));
+    } catch {
+      return new Response("Internal Error", { status: 500 });
+    }
+  }
+
+  if (clipMatch && req.method === "DELETE") {
+    try {
+      const id = decodeURIComponent(clipMatch[1]);
+      const clip = await getClip(id);
+      if (!clip) {
+        return new Response("Not Found", { status: 404 });
+      }
+      await kv.delete(["clips", id]);
+      return new Response(null, { status: 204 });
     } catch {
       return new Response("Internal Error", { status: 500 });
     }
@@ -910,6 +1039,7 @@ const HTML = `<!DOCTYPE html>
           <button id="modalCopyBtn" class="ghost">复制</button>
           <button id="modalDownloadBtn" class="ghost">下载</button>
           <button id="modalEditBtn" class="ghost hidden">编辑文本</button>
+          <button id="modalDeleteBtn" class="ghost">删除</button>
           <button id="modalCloseBtn" class="button">关闭</button>
         </div>
       </div>
@@ -946,6 +1076,7 @@ const HTML = `<!DOCTYPE html>
       modalCopyBtn: document.getElementById('modalCopyBtn'),
       modalDownloadBtn: document.getElementById('modalDownloadBtn'),
       modalEditBtn: document.getElementById('modalEditBtn'),
+      modalDeleteBtn: document.getElementById('modalDeleteBtn'),
       modalCloseBtn: document.getElementById('modalCloseBtn')
     };
 
@@ -1074,6 +1205,10 @@ const HTML = `<!DOCTYPE html>
           actions.appendChild(button('编辑', 'ghost', function () { openPreview(clip, true); }));
         }
 
+        actions.appendChild(button('删除', 'ghost', function () {
+          deleteClip(clip);
+        }));
+
         card.appendChild(main);
         card.appendChild(actions);
         els.clipList.appendChild(card);
@@ -1175,6 +1310,24 @@ const HTML = `<!DOCTYPE html>
         setStatus('已写回系统剪贴板。', 'success');
       } catch (error) {
         setStatus(error.message || '复制失败', 'error');
+      }
+    }
+
+    async function deleteClip(clip) {
+      const confirmed = window.confirm('确定删除 "' + clip.name + '" 吗？');
+      if (!confirmed) return;
+      try {
+        const res = await fetch('/api/clips/' + encodeURIComponent(clip.id), {
+          method: 'DELETE'
+        });
+        if (!res.ok) throw new Error('删除失败');
+        if (state.activeClip && state.activeClip.id === clip.id) {
+          closeModal();
+        }
+        setStatus('内容已删除。', 'success');
+        await loadClips();
+      } catch (error) {
+        setStatus(error.message || '删除失败', 'error');
       }
     }
 
@@ -1346,6 +1499,12 @@ const HTML = `<!DOCTYPE html>
     els.modalEditBtn.addEventListener('click', function () {
       if (state.activeClip && state.activeClip.type === 'text') {
         openPreview(state.activeClip, true);
+      }
+    });
+
+    els.modalDeleteBtn.addEventListener('click', function () {
+      if (state.activeClip) {
+        deleteClip(state.activeClip);
       }
     });
 
