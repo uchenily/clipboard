@@ -907,7 +907,6 @@ const HTML = `<!DOCTYPE html>
 
   .card {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
     gap: 14px;
     padding: 18px;
     border-radius: 24px;
@@ -928,6 +927,13 @@ const HTML = `<!DOCTYPE html>
     outline: 0;
     border-color: rgba(217, 107, 43, 0.45);
     box-shadow: 0 0 0 4px rgba(217, 107, 43, 0.12), 0 22px 40px rgba(24, 26, 28, 0.12);
+  }
+
+  .card-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 14px;
   }
 
   .card-main {
@@ -994,6 +1000,7 @@ const HTML = `<!DOCTYPE html>
   .card-actions {
     justify-content: flex-end;
     align-items: flex-start;
+    flex-shrink: 0;
   }
 
   .modal {
@@ -1043,8 +1050,9 @@ const HTML = `<!DOCTYPE html>
       grid-template-columns: 1fr;
     }
 
-    .card {
-      grid-template-columns: 1fr;
+    .card-header {
+      flex-direction: column;
+      align-items: stretch;
     }
   }
 
@@ -1286,13 +1294,16 @@ const HTML = `<!DOCTYPE html>
           }
         });
 
-        const main = document.createElement('div');
-        main.className = 'card-main';
+        const header = document.createElement('div');
+        header.className = 'card-header';
 
         const top = document.createElement('div');
         top.className = 'card-top';
         top.innerHTML = '<span class="tag">' + clipBadge(clip) + '</span><h3 class="card-title">' + escapeHtml(clip.name) + '</h3>';
-        main.appendChild(top);
+        header.appendChild(top);
+
+        const main = document.createElement('div');
+        main.className = 'card-main';
 
         if (clip.type === 'image') {
           const img = document.createElement('img');
@@ -1324,7 +1335,7 @@ const HTML = `<!DOCTYPE html>
           actions.appendChild(button('复制', 'ghost', function () { copyClip(clip); }));
         }
 
-        actions.appendChild(button('下载', 'button', function () {
+        actions.appendChild(button('下载', 'ghost', function () {
           window.open('/api/clips/' + encodeURIComponent(clip.id) + '/download', '_blank');
         }));
 
@@ -1336,8 +1347,9 @@ const HTML = `<!DOCTYPE html>
           deleteClip(clip);
         }));
 
+        header.appendChild(actions);
+        card.appendChild(header);
         card.appendChild(main);
-        card.appendChild(actions);
         els.clipList.appendChild(card);
       });
     }
