@@ -453,9 +453,14 @@ Deno.serve(async (req: Request) => {
   const path = url.pathname;
 
   if (path === "/") {
-    return new Response(HTML.replaceAll("__DAV_URL__", `${url.origin}${DAV_PREFIX}/`), {
-      headers: HTML_HEADERS,
-    });
+    return new Response(
+      HTML
+        .replaceAll("__DAV_URL__", `/`)
+        .replaceAll("__APP_ORIGIN__", url.origin),
+      {
+        headers: HTML_HEADERS,
+      },
+    );
   }
 
   if (path.startsWith(DAV_PREFIX)) {
@@ -726,6 +731,41 @@ const HTML = `<!DOCTYPE html>
   .stat strong {
     display: block;
     font-size: 1rem;
+  }
+
+  .example-card {
+    padding: 16px 18px;
+    border-radius: 18px;
+    background: rgba(255, 255, 255, 0.72);
+    border: 1px solid var(--line);
+  }
+
+  .example-card p {
+    margin: 0 0 10px;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+
+  .example-title {
+    margin: 0 0 10px;
+    font-size: 0.9rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--accent-strong);
+  }
+
+  .example-command {
+    margin: 0;
+    padding: 12px 14px;
+    border-radius: 14px;
+    background: rgba(24, 32, 40, 0.92);
+    color: #f4efe6;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.84rem;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    word-break: break-word;
   }
 
   .mono {
@@ -1104,6 +1144,15 @@ const HTML = `<!DOCTYPE html>
           <div class="stat">
             <label>快捷方式</label>
             <strong><span class="mono">Ctrl/Cmd + V</span> 直接保存系统剪贴板</strong>
+          </div>
+          <div class="example-card">
+            <div class="example-title">curl 示例</div>
+            <p>上传文本，再用返回的 <span class="mono">id</span> 下载：</p>
+            <pre class="example-command">curl "__APP_ORIGIN__/api/clips" \
+  -H "content-type: application/json" \
+  -d '{"type":"text","name":"hello.txt","content":"hello"}'
+
+curl "__APP_ORIGIN__/api/clips/&lt;返回的id&gt;/download" -o hello.txt</pre>
           </div>
 
         </div>
