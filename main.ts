@@ -219,8 +219,8 @@ function buildDavPropfind(origin: string, pathname: string, clips: Clip[], targe
   return new Response(xml, {
     status: 207,
     headers: {
-      "content-type": "application/xml; charset=utf-8",
-      dav: "1",
+      "content-type": "text/xml; charset=utf-8",
+      dav: "1, 2",
     },
   });
 }
@@ -233,7 +233,7 @@ async function handleDav(req: Request, url: URL) {
     return new Response(null, {
       headers: {
         allow: "OPTIONS, PROPFIND, GET, HEAD, PUT, DELETE, LOCK, UNLOCK",
-        dav: "1",
+        dav: "1, 2",
         "ms-author-via": "DAV",
       },
     });
