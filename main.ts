@@ -39,9 +39,22 @@ function sanitizeName(name: string) {
     .slice(0, 120) || "untitled";
 }
 
-function inferTextName(content: string) {
-  const firstLine = content.split(/\r?\n/, 1)[0]?.trim() || "Quick note";
-  return sanitizeName(firstLine.slice(0, 32)) + ".txt";
+function inferTextName(_content: string) {
+  const buildWord = function () {
+    const consonants = ["l", "m", "n", "r", "s", "t", "v", "c", "d", "f", "p"];
+    const vowels = ["a", "e", "i", "o", "u"];
+    const syllables = 2 + Math.floor(Math.random() * 2);
+    let word = "";
+    for (let i = 0; i < syllables; i++) {
+      word += consonants[Math.floor(Math.random() * consonants.length)];
+      word += vowels[Math.floor(Math.random() * vowels.length)];
+      if (Math.random() > 0.65) {
+        word += consonants[Math.floor(Math.random() * consonants.length)];
+      }
+    }
+    return word.slice(0, 8);
+  };
+  return sanitizeName(buildWord() + "-" + buildWord()) + ".txt";
 }
 
 function encodeBase64(bytes: Uint8Array) {
@@ -956,7 +969,7 @@ const HTML = `<!DOCTYPE html>
 
   .preview.truncate {
     display: -webkit-box;
-    -webkit-line-clamp: 3;
+    -webkit-line-clamp: 5;
     -webkit-box-orient: vertical;
     overflow: hidden;
   }
@@ -1241,7 +1254,7 @@ const HTML = `<!DOCTYPE html>
     }
 
     function previewText(clip) {
-      return clip.content.length > 220 ? clip.content.slice(0, 220) + '…' : clip.content;
+      return clip.content.length > 420 ? clip.content.slice(0, 420) + '…' : clip.content;
     }
 
     function autoResizeTextarea(textarea) {
